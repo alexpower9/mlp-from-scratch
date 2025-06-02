@@ -7,9 +7,15 @@ class MLP:
 
 #use this as input layer as well
 class Dense:
-    def __init__(self, n_inputs, n_neurons):
+    def __init__(self, n_inputs, n_neurons, weight_regularizer_L2=5e-4, bias_regularizer_L2=5e-4):
         self.weights = np.random.randn(n_inputs, n_neurons) * 0.01
         self.biases = np.zeros((1, n_neurons))
+
+        self.weight_momentums = np.zeros_like(self.weights)
+        self.bias_momentums = np.zeros_like(self.biases)
+
+        self.weight_regularizer_L2 = weight_regularizer_L2
+        self.bias_regularizer_L2 = bias_regularizer_L2
 
     def forward(self, inputs):
         self.inputs = inputs #need this for backprop
@@ -51,10 +57,19 @@ class Softmax:
         probs = exp_values / np.sum(exp_values, axis=1, keepdims=True)
         self.output = probs
 
+    def backward(self, dvalues):
+        self.dinputs = np.empty_like(dvalues)
+
+        for index, (single_output, single_dvalues) in enumerate(zip(self.output, dvalues)):
+            single_output = single_output.reshape(-1, 1)
+
+            jacobian_matrix = np.diagflat(single_output) - np.dot(single_output, single_output.T)
+            self.dinputs[index] = np.dot(jacobian_matrix, single_dvalues)
+
 #so this will be taking in the softmax outputs, already normalized
 #formula is (sum of) y_true_i * log(y_pred)
 class CategoricalCrossEntropy:
-    def forward(self, y_true, y_pred):
+    def forward(self, y_pred, y_true):
         sample_nums = len(y_pred)
 
         y_pred_clipped = np.clip(y_pred, 1e-7, 1 - 1e-7)
@@ -62,7 +77,7 @@ class CategoricalCrossEntropy:
         #probabilities for categorical labels
         #if categorical, just index to find the guess
         if len(y_true.shape) == 1:
-            correct_confidences = y_pred_clipped[range(sample_nums, y_true)]
+            correct_confidences = y_pred_clipped[range(sample_nums), y_true]
         #if not, then we apply the dot product logic from the formula
         elif len(y_true.shape) == 2:
             correct_confidences = np.sum(y_pred_clipped*y_true, axis=1)
@@ -71,6 +86,33 @@ class CategoricalCrossEntropy:
         losses = -np.log(correct_confidences)
         #average loss across batch
         return np.mean(losses)
+    
+    #if using softmax for the activation of the output, pass those in as values
+    def backward(self, values, y_true):
+        samples = len(values)
+
+        labels = len(values[0])
+        #if sparse, one hot encode them
+        if len(y_true.shape) == 1:
+            y_true = np.eye(labels)[y_true]
+        
+        #now calculate gradient
+        self.dinputs = -y_true / values
+        #and now normalize
+        self.dinputs = self.dinputs / samples
+
+    def regularization_loss(self, layer):
+        regularization_loss = 0
+
+        #we calculate these only when factor is greater than 0
+        if layer.weight_regularizer_L2 > 0:
+            regularization_loss += layer.weight_regularizer_L2 * np.sum(layer.weights * layer.weights)
+
+        if layer.bias_regularizer_L2 > 0:
+            regularization_loss += layer.bias_regularizer_L2 * np.sum(layer.biases * layer.biases)
+
+        return regularization_loss
+
 
 class MSELoss:
     def forward(self, y_true, y_pred):
@@ -83,12 +125,17 @@ class MSELoss:
        return 2 * (y_pred - y_true) / num_of_elements 
     
 class SGDOptimizer:
-    def  __init__(self, learning_rate = 1.0):
+    def  __init__(self, learning_rate = 1.0, momentum = 0.0):
         self.learning_rate = learning_rate
+        self.momentum = momentum
 
     def update_params(self, layer):
-        layer.weights += -self.learning_rate * layer.dweights
-        layer.biases += -self.learning_rate * layer.dbiases
+        #use momentum now
+        layer.weight_momentums = self.momentum * layer.weight_momentums - self.learning_rate * layer.dweights
+        layer.bias_momentums - self.momentum * layer.bias_momentums - self.learning_rate * layer.dbiases 
+
+        layer.weights += layer.weight_momentums
+        layer.biases += layer.bias_momentums
         
 
 
